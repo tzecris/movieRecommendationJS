@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+	<title>imdb</title>
+	<style type="text/css">
+		#inputElements {
+			text-align-last: center;
+			height: 40px;
+			background-color: #c79eed;
+		}
+
+		#inputElements input {
+			margin: 7px;
+			font-size: 17px;
+			border-color: transparent;
+			border-radius: 10px;
+		}
+
+		#inputElements strong {
+			margin: 7px;
+			font-size: 17px;
+		}
+
+		table {
+			border-collapse: collapse;
+			width: 100%;
+		}
+
+		th, td {
+			text-align: left;
+			padding: 8px;
+		}
+
+		tr:nth-child(even) {
+			background-color: #f2f2f2;
+		}
+
+		#loader {
+			position: absolute;
+			left: 50%;
+			top: 50%;
+			width: 120px;
+			height: 120px;
+			margin: -76px 0 0 -76px;
+			border: 16px solid #f3f3f3;
+			border-radius: 50%;
+			border-top: 16px solid #3498db;
+			-webkit-animation: spin 2s linear infinite;
+			animation: spin 2s linear infinite;
+			z-index: 100;
+		}
+
+		@keyframes spin {
+			0% {
+				transform: rotate(0deg);
+			}
+
+			100% {
+				transform: rotate(360deg);
+			}
+		}
+
+		.button {
+			cursor: pointer
+		}
+
+		.button:disabled {
+			cursor: not-allowed
+		}
+
+		.button:hover {
+			background-color: #a0a0a0;
+		}
+	</style>
+	<script type="text/javascript">
+		window.addEventListener('load', function (event) {
+			async function sendRequest(text) {
+				try {
+					const response = await fetch('http://62.217.127.19:8010/movie', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({
+							keyword: text
+						})
+					});
+					const result = await response.json();
+					populateTable(result)
+				} catch (err) {
+					console.error(err.message);
+				}
+				hideLoadingCircle()
+			}
+
+			async function getAllRatingsByMovieIds(movieIds) {
+				let url = 'http://62.217.127.19:8010/ratings';
+				try {
+					const response = await fetch(url, {
+						headers: { 'Content-Type': 'application/json' },
+						method: 'POST',
+						body: JSON.stringify({
+							movieList: movieIds
+						})
+					});
+					const result = await response.json();
+					if (result.length > 0) {
+						let myRatings = [];
+
+						for (let i = 0; i < movieIds.length; i++) {
+							let movieRatings = new Map(JSON.parse(localStorage.getItem('localMovies')));
+							myRatings.push(movieRatings.get(movieIds[i]) / 2);
+						}
+
+						let max = 0;
+						let maxUser = {};
+						let checkedUsers = [];
+						let found = false;
+						for (let k = 0; k < result.length && !found; k++) {
+
+							for (let i = 0; i < result[k].length; i++) {
+								let tempUser = result[k][i];
+								if (checkedUsers.includes(tempUser.userId))
+									continue;
+
+								let ratingsBylUser = [];
+								checkedUsers.push(tempUser.userId);
+
+								for (let j = 0; j < movieIds.length; j++) {
+									let temp = result[j].find(o => tempUser.userId === o.userId);
+									if (temp) {
+										ratingsBylUser.push(temp.rating);
+									} else {
+										ratingsBylUser.push(0);
+									}
+
+								}
+
+								let pearsonResult = pearson(myRatings, ratingsBylUser)
+								if (pearsonResult > max) {
+									max = pearsonResult;
+									maxUser = tempUser;
+								}
+								if (pearsonResult > 0.75) {
+									max = pearsonResult;
+									maxUser = tempUser;
+									found = true;
+									break;
+								}
+
+							}
+						}
+
+						movieRecommendation(maxUser);
+					}
+
+				} catch (err) {
+					console.error(err.message);
+				}
+			}
+
+
+			document.getElementById('button').addEventListener('click', function (event) {
+				let text = document.getElementById('searchText').value;
+				if (text && text.trim()) {
+					showLoadingCircle();
+					sendRequest(text.trim());
+				} else {
+					alert('empty text not allowed');
+				}
+			});
+
+			document.getElementById('button2').addEventListener('click', function (event) {
+				let localItems = localStorage.getItem('localMovies');
+				let movieIds;
+				if (localItems) {
+					movieIds = new Map(JSON.parse(localItems));
+					if (movieIds.size > 3) {
+						showLoadingCircle()
+						getAllRatingsByMovieIds([...movieIds.keys()]);
+					} else {
+						alert('minimum movies for recommendation ar 4')
+					}
+
+				} else {
+					alert('there is no rating yet')
+				}
+
+
+			});
+
+		});
+
+		async function getMovieById(id) {
+			let url = 'http:62.217.127.19:8010/movie/' + id;
+			try {
+				const response = await fetch(url, {
+					method: 'GET'
+				});
+				const result = await response.json();
+				return result;
+			} catch (err) {
+				console.error(err.message);
+			}
+		}
+
+
+		async function getRatingsByUserId(userId) {
+			let url = 'http://62.217.127.19:8010/ratings/' + userId;
+			try {
+				const response = await fetch(url, {
+					method: 'GET'
+				});
+				const result = await response.json();
+				return result;
+			} catch (err) {
+				console.error(err.message);
+			}
+		}
+
+		async function movieRecommendation(maxUser) {
+			localStorage.setItem('moviesForRecommendation', '');
+
+			if(!maxUser.userId){
+				document.getElementById('recommendedFilmsBodyTable').innerHTML = '';
+				alert('There are no recomendations for your ratings.')
+				hideLoadingCircle();
+				return;
+			}
+
+			let recommendedMoviesList = new Array();
+			let resultMovies = await getRatingsByUserId(maxUser.userId);
+			recommendedMoviesList = resultMovies.filter(rm => rm.rating > 4);
+			let isListBiggerThan11 = recommendedMoviesList.length > 11;
+
+			if (recommendedMoviesList) {
+				let recomMoviesDetails = new Array();
+				for (let i = 0; i < recommendedMoviesList.length; i++) {
+
+					recomMoviesDetails.push(await getMovieById(Number(recommendedMoviesList[i].movieId)))
+					if (i === 10) {
+						localStorage.setItem('moviesForRecommendation', JSON.stringify(recommendedMoviesList.slice(11)));
+						break;
+					}
+
+				}
+
+				populateRecommendationTable(recomMoviesDetails, isListBiggerThan11)
+				hideLoadingCircle();
+
+			}
+
+		}
+
+		function pearson(x, y) {
+			const promedio = l => l.reduce((s, a) => s + a, 0) / l.length
+			const calc = (v, prom) => Math.sqrt(v.reduce((s, a) => (s + a * a), 0) - n * prom * prom)
+			let n = x.length
+			let nn = 0
+			for (let i = 0; i < n; i++, nn++) {
+				if ((!x[i] && x[i] !== 0) || (!y[i] && y[i] !== 0)) {
+					nn--
+					continue
+				}
+				x[nn] = x[i]
+				y[nn] = y[i]
+			}
+			if (n !== nn) {
+				x = x.splice(0, nn)
+				y = y.splice(0, nn)
+				n = nn
+			}
+			const prom_x = promedio(x), prom_y = promedio(y)
+			return (x.map((e, i) => ({ x: e, y: y[i] }))
+				.reduce((v, a) => v + a.x * a.y, 0) - n * prom_x * prom_y
+			) / (calc(x, prom_x) * calc(y, prom_y))
+		}
+
+		function showLoadingCircle() {
+			document.getElementById('loader').hidden = false;
+			document.getElementById('button').disabled = true;
+			document.getElementById('button2').disabled = true;
+			let loadMoviesButton = document.getElementById('loadMoviesButton');
+			if (loadMoviesButton) {
+				loadMoviesButton.disabled = true;
+			}
+		}
+
+		function hideLoadingCircle() {
+			document.getElementById('loader').hidden = true;
+			document.getElementById('button').disabled = false;
+			document.getElementById('button2').disabled = false;
+			let loadMoviesButton = document.getElementById('loadMoviesButton');
+			if (loadMoviesButton) {
+				loadMoviesButton.disabled = false;
+			}
+		}
+
+		function populateRecommendationTable(recommendedMoviesList, isListBiggerThan11) {
+			document.getElementById('recommendedFilmsBodyTable').innerHTML = '';
+			document.getElementById('filmsBodyTable').innerHTML = '';
+			document.getElementById('tableTitle').textContent = 'Recommendations';
+
+			for (let i = 0; i < recommendedMoviesList.length; i++) {
+				const trElement = document.createElement('tr');
+
+				const td1Element = document.createElement('td');
+				const td2Element = document.createElement('td');
+				const td3Element = document.createElement('td');
+
+				const txtTitle = document.createTextNode(recommendedMoviesList[i][0].title);
+				const txtFilmId = document.createTextNode(recommendedMoviesList[i][0].movieId);
+				const txtGenres = document.createTextNode(recommendedMoviesList[i][0].genres);
+
+				td1Element.appendChild(txtFilmId);
+				td2Element.appendChild(txtTitle);
+				td3Element.appendChild(txtGenres);
+
+				trElement.appendChild(td1Element);
+				trElement.appendChild(td2Element);
+				trElement.appendChild(td3Element);
+
+				document.getElementById('recommendedFilmsBodyTable').appendChild(trElement)
+
+			}
+			if (isListBiggerThan11) {
+				let buttonForMore = document.createElement('input');
+				buttonForMore.id = 'loadMoviesButton';
+				buttonForMore.className = 'button';
+				buttonForMore.type = 'button';
+				buttonForMore.value = "Load more movies..";
+				buttonForMore.onclick = function () {
+					loadMoreMovies();
+				}
+
+				document.getElementById('recommendedFilmsBodyTable').appendChild(buttonForMore)
+			}
+			document.getElementById('countElements').hidden = true;
+			document.getElementById('filmsBodyTable').hidden = true;
+			document.getElementById('movieRatings').hidden = true
+
+		}
+
+		async function loadMoreMovies() {
+			let moreMovies = localStorage.getItem('moviesForRecommendation');
+			if (moreMovies) {
+				showLoadingCircle()
+				let moreMoviesToShow = JSON.parse(moreMovies);
+
+				document.getElementById('recommendedFilmsBodyTable').removeChild(document.getElementById('loadMoviesButton'))
+
+				let recomMoviesDetails = new Array();
+				for (let i = 0; i < moreMoviesToShow.length; i++) {
+					recomMoviesDetails.push(await getMovieById(Number(moreMoviesToShow[i].movieId)));
+				}
+				populateMoreMoviesTable(recomMoviesDetails);
+
+			} else {
+				alert('something went wrong')
+			}
+		}
+
+		function populateMoreMoviesTable(moreMoviesToShow) {
+			document.getElementById('filmsBodyTable').innerHTML = '';
+			document.getElementById('tableTitle').textContent = 'Recommendations';
+
+			for (let i = 0; i < moreMoviesToShow.length; i++) {
+				const trElement = document.createElement('tr');
+
+				const td1Element = document.createElement('td');
+				const td2Element = document.createElement('td');
+				const td3Element = document.createElement('td');
+
+				const txtTitle = document.createTextNode(moreMoviesToShow[i][0].title);
+				const txtFilmId = document.createTextNode(moreMoviesToShow[i][0].movieId);
+				const txtGenres = document.createTextNode(moreMoviesToShow[i][0].genres);
+
+				td1Element.appendChild(txtFilmId);
+				td2Element.appendChild(txtTitle);
+				td3Element.appendChild(txtGenres);
+
+				trElement.appendChild(td1Element);
+				trElement.appendChild(td2Element);
+				trElement.appendChild(td3Element);
+
+				document.getElementById('recommendedFilmsBodyTable').appendChild(trElement)
+
+			}
+			hideLoadingCircle()
+		}
+
+		function populateTable(results) {
+			document.getElementById('filmsBodyTable').innerHTML = '';
+			document.getElementById('filmsBodyTable').hidden = false;
+			document.getElementById('recommendedFilmsBodyTable').innerHTML = '';
+
+			document.getElementById('tableTitle').textContent = 'Search results';
+
+			for (let i = 0; i < results.length; i++) {
+
+				let movieIds = new Map(JSON.parse(localStorage.getItem('localMovies')));
+
+				var array = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"];
+				let selectId = 'ratingSelect' + i;
+
+				var selectList = document.createElement("select");
+				selectList.id = selectId;
+
+				for (let i = 0; i < array.length; i++) {
+					var option = document.createElement("option");
+					option.value = array[i];
+					option.text = array[i];
+					selectList.appendChild(option);
+				}
+
+				if (movieIds && movieIds.get(results[i].movieId)) {
+					selectList.value = movieIds.get(results[i].movieId);
+				}
+
+				const trElement = document.createElement('tr');
+
+				const td1Element = document.createElement('td');
+				const td2Element = document.createElement('td');
+				const td3Element = document.createElement('td');
+				const td4Element = document.createElement('td');
+				const td5Element = document.createElement('td');
+
+				const txtTitle = document.createTextNode(results[i].title);
+				const txtFilmId = document.createTextNode(results[i].movieId);
+				const txtGenres = document.createTextNode(results[i].genres);
+
+				td1Element.appendChild(txtFilmId);
+				td2Element.appendChild(txtTitle);
+				td3Element.appendChild(txtGenres);
+				td4Element.appendChild(selectList);
+
+				trElement.appendChild(td1Element);
+				trElement.appendChild(td2Element);
+				trElement.appendChild(td3Element);
+				trElement.appendChild(td4Element);
+
+				document.getElementById('filmsBodyTable').appendChild(trElement)
+
+				document.getElementById(selectId).addEventListener('change', function (event) {
+					let movieIds = new Map(JSON.parse(localStorage.getItem('localMovies')));
+
+					movieIds.set(results[i].movieId, event.target.value);
+					localStorage.setItem('localMovies', JSON.stringify(Array.from(movieIds.entries())));
+
+				});
+
+			}
+			document.getElementById('countNumber').innerHTML = results.length;
+			document.getElementById('countElements').hidden = false;
+			document.getElementById('movieRatings').hidden = false
+
+
+		}
+	</script>
+</head>
+
+<body>
+	<div class="loader" id="loader" hidden></div>
+	<div id="mainComponent">
+		<div id="inputElements">
+			<input type="text" id="searchText">
+			<input class="button" type="button" id="button" value="Send Request">
+			<input class="button" type="button" id="button2" value="Recommendation">
+			<strong id="countElements" hidden>Movies found: <span id="countNumber"></span></strong>
+		</div>
+
+		<div id="filmsTable">
+			<h3 id="tableTitle"></h3>
+			<table>
+				<thead>
+					<tr>
+						<th>Id</th>
+						<th>Title</th>
+						<th>Genre</th>
+						<th id="movieRatings">Rating</th>
+					</tr>
+				</thead>
+				<tbody id="filmsBodyTable">
+
+				</tbody>
+				<tbody id="recommendedFilmsBodyTable">
+
+				</tbody>
+			</table>
+		</div>
+	</div>
+
+</body>
+
+</html>
